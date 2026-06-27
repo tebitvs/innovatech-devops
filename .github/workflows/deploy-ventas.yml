@@ -1,55 +1,65 @@
-name: CI/CD API Ventas - ECS
+name: Deploy Ventas API Innovatech
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
     paths:
-      - 'back-Ventas_SpringBoot/**'
+      - "back-Ventas_SpringBoot/**"
+      - ".github/workflows/deploy-ventas.yml"
 
-env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: innovatech/ventas-api
-  ECS_CLUSTER: innovatech-cluster-devops
-  ECS_SERVICE: ventas-api-service
-  CONTAINER_NAME: ventas-api
+permissions:
+  contents: read
 
 jobs:
-  build-and-deploy:
+  build-push-deploy:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout codigo
-        uses: actions/checkout@v3
+    env:
+      IMAGE_TAG: ${{ github.sha }}
 
-      - name: Configurar credenciales AWS
-        uses: aws-actions/configure-aws-credentials@v2
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Login a Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag y push imagen a ECR
-        id: build-image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+      - name: Build ventas image
         run: |
-          cd back-Ventas_SpringBoot/Springboot-API-REST
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          docker build \
+            -t ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPO_VENTAS }}:${IMAGE_TAG} \
+            -t ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPO_VENTAS }}:latest \
+            ./back-Ventas_SpringBoot/Springboot-API-REST
 
-      - name: Forzar nuevo despliegue en ECS
+      - name: Push ventas image to ECR
         run: |
-          aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $ECS_SERVICE \
-            --force-new-deployment \
-            --region $AWS_REGION
+          docker push ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPO_VENTAS }}:${IMAGE_TAG}
+          docker push ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPO_VENTAS }}:latest
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ secrets.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Deploy ventas API to EKS
+        run: |
+          kubectl set image deployment/ventas-api \
+            ventas-api=${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPO_VENTAS }}:${IMAGE_TAG} \
+            -n ${{ secrets.K8S_NAMESPACE }}
+
+          kubectl rollout status deployment/ventas-api \
+            -n ${{ secrets.K8S_NAMESPACE }}
